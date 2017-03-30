@@ -45,7 +45,8 @@ import com.pingidentity.sdk.IdpAuthenticationAdapterV2;
  * Retrieves and validates a JWT object received as a parameter from the HTTP
  * request and returns the body of the JWT to PF. The name of the http parameter
  * is "request" and the content of the JWT is returned to PingFederate in a
- * parameter called jwtBoby.
+ * parameter called jwtBoby. The claims in the JWT are also passed to PingFederate, 
+ * extend the contract of the adapter to get the values of the claim.
  * </p>
  */
 public class PFRequestObjectAdapter implements IdpAuthenticationAdapterV2 {
@@ -60,12 +61,17 @@ public class PFRequestObjectAdapter implements IdpAuthenticationAdapterV2 {
 	// Signature Algorithm
 	private static final String SINGNATURE_ALGORITHM = "Signature algorithm";
 	private static final String SINGNATURE_ALGORITHM_DESC = "The algorithm used to validate the JWT signature";
+	
+	
+	// Request object param name
+		private static final String REQUEST_OBJECT_PARAM_NAME = "Request Object parameter name";
+		private static final String REQUEST_OBJECT_PARAM_NAME_DESC = "The parameter name of the request object (default \"request\")";
 
-	private static final String[] validAlgorithms = new String[] { "" };
-
-	private static final String requestObjectParamName = "reqeust";
-	private static final String jwtBodyAttributemName = "jwtBody";
-
+	private static final String[] validAlgorithms = new String[] { "ES256" };
+	
+	private static final String jwtBodyAttributeName = "jwtBody";
+	
+	private String requestObjectParamName = null;
 	protected String jwksUrl = null;
 	protected String signatureAlgorithm = null;
 
@@ -79,18 +85,23 @@ public class PFRequestObjectAdapter implements IdpAuthenticationAdapterV2 {
 		AdapterConfigurationGuiDescriptor guiDescriptor = new AdapterConfigurationGuiDescriptor();
 		guiDescriptor.setDescription("Request Object Adapter");
 
-		TextFieldDescriptor serviceDescriptor = new TextFieldDescriptor(JWKS_URL, JWKS_URL_DESC);
-		serviceDescriptor.addValidator(requiredFieldValidator);
-		serviceDescriptor.setDefaultValue("https://client.com/JWKS");
-		guiDescriptor.addField(serviceDescriptor);
+		TextFieldDescriptor jwksUrlTextFieldDescriptor = new TextFieldDescriptor(JWKS_URL, JWKS_URL_DESC);
+		jwksUrlTextFieldDescriptor.addValidator(requiredFieldValidator);
+		jwksUrlTextFieldDescriptor.setDefaultValue("https://client.com/JWKS");
+		guiDescriptor.addField(jwksUrlTextFieldDescriptor);
+		
+		TextFieldDescriptor paramNameTextFieldDescriptor = new TextFieldDescriptor(REQUEST_OBJECT_PARAM_NAME, REQUEST_OBJECT_PARAM_NAME_DESC);
+		paramNameTextFieldDescriptor.addValidator(requiredFieldValidator);
+		paramNameTextFieldDescriptor.setDefaultValue("request");
+		guiDescriptor.addField(paramNameTextFieldDescriptor);
 
-		SelectFieldDescriptor restMethodDescriptor = new SelectFieldDescriptor(SINGNATURE_ALGORITHM, SINGNATURE_ALGORITHM_DESC, validAlgorithms);
-		restMethodDescriptor.addValidator(requiredFieldValidator);
-		guiDescriptor.addField(restMethodDescriptor);
+		SelectFieldDescriptor sigAlgSelectFieldDescriptor = new SelectFieldDescriptor(SINGNATURE_ALGORITHM, SINGNATURE_ALGORITHM_DESC, validAlgorithms);
+		sigAlgSelectFieldDescriptor.addValidator(requiredFieldValidator);
+		guiDescriptor.addField(sigAlgSelectFieldDescriptor);
 
 		// Create the Idp authentication adapter descriptor
 		Set<String> contract = new HashSet<String>();
-		contract.add(jwtBodyAttributemName);
+		contract.add(jwtBodyAttributeName);
 		descriptor = new IdpAuthnAdapterDescriptor(this, "Request Object adapter", contract, true, guiDescriptor, false);
 
 	}
@@ -221,6 +232,7 @@ public class PFRequestObjectAdapter implements IdpAuthenticationAdapterV2 {
 	public void configure(Configuration configuration) {
 		this.jwksUrl = configuration.getFieldValue(JWKS_URL);
 		this.signatureAlgorithm = configuration.getFieldValue(SINGNATURE_ALGORITHM);
+		this.requestObjectParamName = configuration.getFieldValue(REQUEST_OBJECT_PARAM_NAME);
 	}
 
 	/**
@@ -318,23 +330,24 @@ public class PFRequestObjectAdapter implements IdpAuthenticationAdapterV2 {
 			IOException {
 
 		log.info("**** PFRequestObjectAdapter: start");
+		log.info("inParameters: " + inParameters.toString());
+		logHttpRequest(req);
+		
 		AuthnAdapterResponse authnAdapterResponse = new AuthnAdapterResponse();
-
+		Map<String, Object> outAttributes = new HashMap<String, Object>();
+		outAttributes.put(jwtBodyAttributeName, "");
+		authnAdapterResponse.setAttributeMap(outAttributes);
 		String requestParameterValue = req.getParameter(requestObjectParamName);
 
 		if (requestParameterValue != null) {
+			log.info("request parameter not null");
 			JWTClaimsSet claimsSet;
 			try {
 				claimsSet = validateToken(requestParameterValue);
-				Map<String, Object> outAttributes = new HashMap<String, Object>();
-				outAttributes.put(jwtBodyAttributemName, claimsSet.getClaims().toString());
+				outAttributes.put(jwtBodyAttributeName, claimsSet.getClaims().toString());
 				outAttributes.putAll(claimsSet.getClaims());
-				logHttpRequest(req);
-
-				log.info("**** inParameters: " + inParameters.toString());
 				authnAdapterResponse.setAuthnStatus(AUTHN_STATUS.SUCCESS);
-				authnAdapterResponse.setAttributeMap(outAttributes);
-				log.info("**** PFRequestObjectAdapter: end");
+				log.info("JwtBody added to response, returing success");
 			} catch (ParseException | BadJOSEException | JOSEException e) {
 				log.error("JWT token not valid",e);
 				authnAdapterResponse.setAuthnStatus(AUTHN_STATUS.FAILURE);
@@ -344,6 +357,7 @@ public class PFRequestObjectAdapter implements IdpAuthenticationAdapterV2 {
 			authnAdapterResponse.setAuthnStatus(AUTHN_STATUS.SUCCESS);
 		}
 		
+		log.info("**** PFRequestObjectAdapter: end");
 		return authnAdapterResponse;
 
 	}
@@ -363,7 +377,7 @@ public class PFRequestObjectAdapter implements IdpAuthenticationAdapterV2 {
 
 	@SuppressWarnings(value = { "rawtypes" })
 	protected JWTClaimsSet validateToken(String accessToken) throws MalformedURLException, ParseException, BadJOSEException, JOSEException {
-		log.debug("Start validateToken");
+		log.info("Start validateToken");
 		// Set up a JWT processor to parse the tokens and then check their
 		// signature
 		// and validity time window (bounded by the "iat", "nbf" and "exp"
@@ -392,21 +406,21 @@ public class PFRequestObjectAdapter implements IdpAuthenticationAdapterV2 {
 		SecurityContext ctx = null; // optional context parameter, not required
 									// here
 		JWTClaimsSet claimsSet = jwtProcessor.process(accessToken, ctx);
-		log.debug("End validateToken. ClaimSet: " + claimsSet.getClaims().toString());
+		log.info("Signature is valid. ClaimSet: " + claimsSet.getClaims().toString());
 		return claimsSet;
 	}
 
 	protected void logHttpRequest(HttpServletRequest httpRequest) {
-		log.info("**** Request " + httpRequest.getMethod() + " for " + httpRequest.getRequestURI());
+		log.info("Request " + httpRequest.getMethod() + " for " + httpRequest.getRequestURI());
 
-		log.info("**** Headers");
+		log.info("Headers");
 		Enumeration headerNames = httpRequest.getHeaderNames();
 		while (headerNames.hasMoreElements()) {
 			String headerName = (String) headerNames.nextElement();
 			log.info(headerName + " = " + httpRequest.getHeader(headerName));
 		}
 
-		log.info("**** Parameters");
+		log.info("Parameters");
 		Enumeration params = httpRequest.getParameterNames();
 		while (params.hasMoreElements()) {
 			String paramName = (String) params.nextElement();
