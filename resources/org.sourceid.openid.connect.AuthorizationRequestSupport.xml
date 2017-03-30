@@ -1,0 +1,3 @@
+<config xmlns="http://www.sourceid.org/2004/05/config">
+    <item name="AllowRequestParameter">true</item>
+</config>
